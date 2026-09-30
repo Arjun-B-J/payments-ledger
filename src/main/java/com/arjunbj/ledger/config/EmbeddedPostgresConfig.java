@@ -26,7 +26,8 @@ public class EmbeddedPostgresConfig {
 
     @Bean(destroyMethod = "close")
     EmbeddedPostgres embeddedPostgres(@Value("${ledger.db.embedded-data-dir:}") String dataDir,
-                                      @Value("${ledger.db.embedded-port:0}") int port) throws IOException {
+                                      @Value("${ledger.db.embedded-port:0}") int port,
+                                      @Value("${ledger.db.embedded-durable:false}") boolean durable) throws IOException {
         EmbeddedPostgres.Builder builder = EmbeddedPostgres.builder();
         if (!dataDir.isBlank()) {
             // Keep data between runs: zonky only runs initdb when the directory has no cluster yet.
@@ -34,6 +35,14 @@ public class EmbeddedPostgresConfig {
         }
         if (port > 0) {
             builder.setPort(port);
+        }
+        if (durable) {
+            // zonky starts Postgres with fsync and synchronous_commit off, which is right for tests
+            // and wrong for a ledger: a commit that has not reached the disk can be lost. These come
+            // after zonky's own flags on the command line, so they win.
+            builder.setServerConfig("fsync", "on")
+                    .setServerConfig("synchronous_commit", "on")
+                    .setServerConfig("full_page_writes", "on");
         }
         EmbeddedPostgres postgres = builder.start();
         log.info("embedded PostgreSQL listening on port {}", postgres.getPort());
