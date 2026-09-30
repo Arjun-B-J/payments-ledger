@@ -38,7 +38,7 @@ Each decision lists what was chosen, why, and what it costs.
 
 **Chosen:** inside the transfer transaction the order is: claim the idempotency key (insert the transfer), insert both entries, insert the outbox event, and only then update balances, lower account id first.
 
-**Why:** two transfers A to B and B to A that each lock "their" debit account first can deadlock. Ordering every lock by account id makes a wait cycle impossible. Balance rows are the contended rows, so taking their locks last keeps them held for the shortest time before commit. The concurrency tests have not produced a deadlock; the retry in decision 6 is a safety net.
+**Why:** two transfers A to B and B to A that each lock "their" debit account first can deadlock. Ordering every lock by account id makes a wait cycle impossible. Balance rows are the contended rows, so taking their locks last keeps them held for the shortest time before commit. The retry in decision 6 is a safety net; the Retries column in [BENCHMARKS.md](BENCHMARKS.md) shows how often it fired.
 
 **Cost:** the code has two branches for the leg order. A transfer that is refused for funds has already written its journal rows, which the rollback discards. Locking the hottest account last instead of the lowest id first would shorten its lock hold further; that is not implemented or measured.
 
@@ -106,4 +106,4 @@ The outbox is written so that a broker can be added behind `OutboxSink`, but not
 
 ## 17. Embedded PostgreSQL for tests and local runs
 
-zonky `embedded-postgres` downloads real PostgreSQL binaries (17.11 here) as Maven artifacts, so `./mvnw verify` needs only a JDK. Tests run against the same schema, locks and constraints as production, not an in-memory imitation. Setting `SPRING_DATASOURCE_URL` switches to a real server. The embedded defaults include `synchronous_commit=off`, which the benchmark report states next to its numbers.
+zonky `embedded-postgres` downloads real PostgreSQL binaries (17.11 here) as Maven artifacts, so `./mvnw verify` needs only a JDK. Tests run against the same schema, locks and constraints as production, not an in-memory imitation. Setting `SPRING_DATASOURCE_URL` switches to a real server. The embedded defaults include `synchronous_commit=off` and `fsync=off`, which the benchmark report states next to its numbers.
