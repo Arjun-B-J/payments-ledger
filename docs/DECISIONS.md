@@ -106,4 +106,12 @@ The outbox is written so that a broker can be added behind `OutboxSink`, but not
 
 ## 17. Embedded PostgreSQL for tests and local runs
 
-zonky `embedded-postgres` downloads real PostgreSQL binaries (17.11 here) as Maven artifacts, so `./mvnw verify` needs only a JDK. Tests run against the same schema, locks and constraints as production, not an in-memory imitation. Setting `SPRING_DATASOURCE_URL` switches to a real server. The embedded defaults include `synchronous_commit=off` and `fsync=off`, which the benchmark report states next to its numbers.
+zonky `embedded-postgres` downloads real PostgreSQL binaries (17.11 here) as Maven artifacts, so `./mvnw verify` needs only a JDK. Tests run against the same schema, locks and constraints as production, not an in-memory imitation. Setting `SPRING_DATASOURCE_URL` switches to a real server. The embedded defaults include `synchronous_commit=off` and `fsync=off`, which the benchmark report states next to its numbers. `ledger.db.embedded-durable=true` turns both back on (see 18).
+
+## 18. The headline benchmark uses durable commits
+
+**Chosen:** the benchmark runs in two modes, the embedded defaults and `-Dledger.db.embedded-durable=true` (`fsync`, `synchronous_commit` and `full_page_writes` on), and each mode writes its own report. The README leads with the durable one.
+
+**Why:** a ledger that acknowledges a transfer before it is on disk can lose money in a crash, so numbers measured without fsync describe a system nobody should run. Durable commits are also the harder test for the hot-account strategies, because the flush happens while the hot row is still locked.
+
+**Cost:** it is still one laptop disk, with Postgres and the load generator sharing the CPU. The absolute numbers say little about a production server; the ratios between strategies say more.

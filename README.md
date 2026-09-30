@@ -1,5 +1,7 @@
 # payments-ledger
 
+[![CI](https://github.com/Arjun-B-J/payments-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/Arjun-B-J/payments-ledger/actions/workflows/ci.yml)
+
 A double-entry payments ledger service on PostgreSQL. It moves money between accounts with idempotent, optionally two-phase transfers, keeps balances correct under heavy contention on a single "hot" account, publishes events through a transactional outbox, and ships a reconciler that re-proves the books from the journal.
 
 Java 17, Spring Boot 3.5, Spring JDBC (explicit SQL, no JPA), Flyway, PostgreSQL 17 (embedded for tests and local runs), Micrometer with Prometheus.
@@ -151,7 +153,26 @@ Log lines written while a transfer is being processed carry `[transfer=<id>]` th
 
 ## Benchmark
 
-`./mvnw -B -Pbench test -Dbench.clients=64` (Windows: `mvnw.cmd`). 64 concurrent clients, 5 s warm-up, 15 s measured, on a laptop (Intel Core Ultra 9 275HX, 24 logical CPUs, 32 GB) with embedded PostgreSQL 17.11 on its default settings, which include `synchronous_commit=off` and `fsync=off`. SKEWED sends 50% of transfers to one merchant account; UNIFORM spreads them over 1,000 users.
+Same harness in two modes: 64 concurrent clients, 5 s warm-up, 15 s measured, on a laptop (Intel Core Ultra 9 275HX, 24 logical CPUs, 32 GB) with embedded PostgreSQL 17.11. SKEWED sends 50% of transfers to one merchant account; UNIFORM spreads them over 1,000 users. Windows: use `mvnw.cmd`.
+
+### Durable commits (the headline)
+
+`./mvnw -B -Pbench test -Dbench.clients=64 -Dledger.db.embedded-durable=true`. `fsync`, `synchronous_commit` and `full_page_writes` are on, so a transfer is acknowledged only after its commit reaches the disk. Two runs:
+
+| Workload | Strategy | Run 1 transfers/s | Run 2 transfers/s | Run 1 p99 ms | Run 2 p99 ms |
+|---|---|---:|---:|---:|---:|
+| SKEWED | ROW_LOCK | 4,044 | 3,404 | 136.19 | 170.24 |
+| SKEWED | ATOMIC | 5,334 | 4,135 | 98.75 | 134.91 |
+| SKEWED | SHARDED (16 rows) | 10,871 | 10,902 | 29.34 | 30.80 |
+| UNIFORM | ROW_LOCK | 10,765 | 10,757 | 34.98 | 17.60 |
+| UNIFORM | ATOMIC | 12,424 | 12,757 | 28.53 | 16.06 |
+| UNIFORM | SHARDED | 12,304 | 12,280 | 28.43 | 22.21 |
+
+Every run: 0 errors, 0 deadlock or serialization retries, and 0 reconciler violations, including the read-model check.
+
+### Embedded defaults (`fsync=off`)
+
+`./mvnw -B -Pbench test -Dbench.clients=64`. Commits do not wait for the disk, so this is an upper bound, not a way to run a ledger. One run:
 
 | Workload | Strategy | Transfers/s | p50 ms | p99 ms | Errors | Retries | Reconciler violations |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -162,14 +183,16 @@ Log lines written while a transfer is being processed carry `[transfer=<id>]` th
 | UNIFORM | ATOMIC | 21,503 | 1.45 | 36.58 | 0 | 0 | 0 |
 | UNIFORM | SHARDED | 21,713 | 1.31 | 34.62 | 0 | 0 | 0 |
 
-What it shows:
+### What it shows
 
-- With one hot account, throughput is set by how long its row stays locked. ATOMIC (one statement per leg) did 1.8x ROW_LOCK; SHARDED did 3.9x ROW_LOCK and 2.1x ATOMIC, and cut p99 from 87.87 ms (ROW_LOCK) to 17.66 ms.
-- Without a hot account the three strategies are within 15% of each other, as expected: sharding only helps when one row is the queue.
-- After every run the outbox drained and the reconciler, including the read-model check, found 0 violations. No transaction needed a deadlock or serialization retry.
-- These are single runs. An earlier, incomplete run of the same harness (before the outbox consumer was batched) measured SKEWED ROW_LOCK at 6,907 and ATOMIC at 12,079 transfers/s at 64 clients, so read the ratios, not the absolute values.
+- With one hot account, throughput is set by how long its row stays locked. With durable commits, SHARDED did 2.7x (run 1) and 3.2x (run 2) the throughput of ROW_LOCK and cut p99 latency by 78% and 82%.
+- SHARDED kept the skewed workload within 12% of its own uniform throughput in both runs (about 10.9k against 12.3k transfers/s): the hot account stopped being the bottleneck.
+- ATOMIC helped less with durable commits (1.2x to 1.3x ROW_LOCK) than without (1.8x): once every commit waits for the disk, the flush, not the extra round trip, dominates how long the row stays locked.
+- The single-row strategies under contention are the noisy cells: run 2 was 16% (ROW_LOCK) and 22% (ATOMIC) below run 1 on SKEWED, while SHARDED and every UNIFORM cell moved less than 3%. Read the ratios, not the absolute values.
+- Durability costs about 42% of uniform throughput (roughly 21.5k down to 12.4k transfers/s): the price of waiting for the disk.
+- 18 runs across both modes, all with the ledger balanced: the outbox drained and the reconciler found nothing.
 
-Full setup, p95 and raw JSON: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Full setup, p95 and raw data: [docs/BENCHMARKS-durable.md](docs/BENCHMARKS-durable.md) (run 2), [docs/benchmark-results-durable-run1.json](docs/benchmark-results-durable-run1.json) (run 1) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md) (embedded defaults).
 
 ## Tests
 
@@ -191,8 +214,7 @@ Full setup, p95 and raw JSON: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - No `BATCHED` (micro-batching) strategy; see decision 10.
 - No Kafka, Debezium or Redis. The outbox sink is in-process; a broker would plug in behind `OutboxSink`.
 - Pending holds do not expire, and there is no refund or reversal endpoint (a correction is a new transfer).
-- The benchmark measures the service and database layer in one JVM, not HTTP, and ran on a laptop with embedded Postgres defaults (`synchronous_commit=off`, `fsync=off`), not on a durable, production-tuned server.
-- The GitHub Actions workflow is included but has not run yet (the repository has not been pushed).
+- The benchmark measures the service and database layer in one JVM, not HTTP, on a laptop with embedded PostgreSQL. The durable run flushes every commit to disk, but it is still one laptop, not a production-tuned server.
 
 ## Layout
 
@@ -206,7 +228,7 @@ src/main/java/com/arjunbj/ledger/
   common/     problem responses, retry, fault-injection points
   config/     embedded PostgreSQL
 src/main/resources/db/migration/V1__ledger_schema.sql
-docs/DECISIONS.md, docs/BENCHMARKS.md
+docs/DECISIONS.md, docs/BENCHMARKS.md, docs/BENCHMARKS-durable.md
 ```
 
 ## License
