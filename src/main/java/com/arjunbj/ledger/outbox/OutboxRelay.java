@@ -46,9 +46,7 @@ public class OutboxRelay {
             if (batch.isEmpty()) {
                 return 0;
             }
-            for (OutboxRepository.Pending pending : batch) {
-                sink.deliver(pending.event());
-            }
+            sink.deliver(batch.stream().map(OutboxRepository.Pending::event).toList());
             failPoints.hit(FailPoints.Point.RELAY_AFTER_DELIVER);
             outbox.markPublished(batch.stream().map(OutboxRepository.Pending::id).toList());
             return batch.size();
