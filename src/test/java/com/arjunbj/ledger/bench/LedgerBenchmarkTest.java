@@ -307,7 +307,8 @@ class LedgerBenchmarkTest {
         md.append("## Caveats\n\n");
         md.append("- One run per cell on a laptop, with Postgres and the load generator sharing the CPU. Treat differences under about 10% as noise.\n");
         md.append("- `synchronous_commit=").append(pg.get("synchronous_commit"))
-                .append("` is the embedded default: a commit does not wait for the WAL flush. With it on, every commit waits for the disk, which lengthens how long the hot row stays locked.\n");
+                .append("` and `fsync=").append(pg.get("fsync"))
+                .append("` are the embedded defaults: a commit never waits for the disk. On a durable production setup every commit waits for the WAL flush, which lengthens how long the hot row stays locked, so absolute numbers would be lower.\n");
         md.append("- The merchant has a lower account id than every user, so under lock ordering its row is locked first and held for the rest of the transaction.\n");
         return md.toString();
     }
